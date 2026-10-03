@@ -319,6 +319,12 @@ async def receive_file(
                     raise WifiTransferError(
                         f"{what} after {timeout:g}s (expected {size:,} bytes)"
                     ) from None
+                except OSError as e:
+                    # A reset is a failed file, not a failed batch: the caller
+                    # moves on to a fresh AP for the next one.
+                    raise WifiTransferError(
+                        f"connection lost at {received:,} of {size:,} bytes: {e}"
+                    ) from e
                 if not chunk:
                     raise WifiTransferError(
                         f"device closed the connection at {received:,} of {size:,} bytes"

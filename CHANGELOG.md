@@ -21,6 +21,10 @@ laptop, and verified byte for byte against BLE downloads.
   after every two files, because the device serves only two transfer
   connections per AP session. It refuses other firmware without `--force`, and
   a battery under 10%.
+- **Firmware 1.7 works with `--force`.** It serves one transfer connection per
+  AP session, not two, so `wifi-transfer` restarts the AP before every file
+  (`protocol.files_per_ap_session()`). Untested firmware gets the same
+  conservative setting.
 - `hostwifi`: joins the device's hidden network and switches back afterwards,
   with NetworkManager (Linux), netsh (Windows), or by hand (`--wifi manual`,
   for macOS). It never re-issues a connect while one is in progress, because
@@ -61,6 +65,14 @@ laptop, and verified byte for byte against BLE downloads.
 - The HTTP escape hatch: `wifi-transfer --url`, the `wifi.url_template`
   setting, `wifi.download_file()` and `wifi.build_url()`. No firmware serves
   files over HTTP.
+
+### Fixed
+
+- **A connection reset during a WiFi transfer crashed `wifi-transfer`** with
+  an unhandled `ConnectionResetError`, ending the batch. `receive_file` now
+  reports it as a `WifiTransferError`, so that file fails and the next one
+  gets a fresh AP. The traceback pointed at `writer.wait_closed()`, but the
+  error came from the read: asyncio re-raises the same exception object there.
 
 ## [1.1.0] — 2026-09-19
 

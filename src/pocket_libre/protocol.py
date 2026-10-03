@@ -116,6 +116,17 @@ END_MARKER = bytes.fromhex("ba5a028f04ba5a028f04")
 # listening; restarting the AP (WIFIC, WIFIO) resets this.
 FILES_PER_AP_SESSION = 2
 
+
+def files_per_ap_session(firmware: str) -> int:
+    """Transfer connections the device serves per AP session.
+
+    Two is measured on firmware 1.8 only. Firmware 1.7 (WiFi V9) accepts a
+    second connection and then resets it before sending anything, so it gets
+    one. Untested firmware also gets one: a fresh AP per file costs about 15 s
+    but has worked on every version seen so far.
+    """
+    return FILES_PER_AP_SESSION if firmware.startswith("1.8") else 1
+
 # Recording bitrate, in bytes per second (32 kbps MP3).
 #
 # The MCU&F listing field is a DURATION IN SECONDS, not a size in KB as

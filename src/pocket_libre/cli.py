@@ -1050,6 +1050,7 @@ def wifi_transfer(ctx, address: str | None, session_key: str | None, date: str |
 
     from pocket_libre.commands import is_safe_id
     from pocket_libre.hostwifi import HostWifiError, backend
+    from pocket_libre.protocol import files_per_ap_session
     from pocket_libre.wifi import DEFAULT_HOST, WifiSession, WifiTransferError
 
     if (date is None) != (timestamp is None):
@@ -1120,7 +1121,8 @@ def wifi_transfer(ctx, address: str | None, session_key: str | None, date: str |
 
             done = failed = 0
             try:
-                async with WifiSession(cmd, host_wifi, log=log) as session:
+                async with WifiSession(cmd, host_wifi, log=log,
+                                       files_per_session=files_per_ap_session(firmware)) as session:
                     for i, (rec, path) in enumerate(todo, 1):
                         console.print(f"  [{i}/{len(todo)}] {rec.date}/{rec.timestamp}...")
 

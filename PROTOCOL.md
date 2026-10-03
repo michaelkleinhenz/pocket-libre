@@ -201,6 +201,9 @@ never see it switch.
 5. **At most two transfer connections per AP session.** After the second, port
    8475 stops listening for good. Restart the AP for more files: `APP&WIFIC`,
    leave the network, `APP&WIFIO`, rejoin, wait for `WIFIS=1` (about 14 s).
+   **Firmware 1.7 (WiFi V9) allows only one:** it accepts a second connection
+   and resets it before sending any bytes. With the AP restarted before every
+   file, 6 of 6 recordings transferred byte-identical to their BLE downloads.
 6. **Finish** with `APP&WIFIC` → `MCU&WIFIC`.
 
 **Never send `APP&U&WIFI` without a transfer connection open.** The device
