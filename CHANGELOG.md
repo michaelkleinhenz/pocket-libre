@@ -6,11 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
+### Fixed
 
-- **USB mass storage control.** `pocket-libre usb on|off|status` switches the
-  device's USB drive mode over BLE (`APP&USB&<0|1>`, read back with
-  `APP&GET&USB`), decoded from an HCI snoop capture of the vendor app.
+- **A BLE disconnect mid-download crashed `download-all`** with `BleakError:
+  Service Discovery has not been performed yet`, raised while unsubscribing
+  from a link that was already gone. Without the crash it was worse: the
+  partial data was saved under the final name, and later runs skipped it as
+  "already exists".
+- **`download` and `download-all` now retry dropped transfers**, as `sync`
+  and `watch` already did, opening a fresh connection for each recording.
+  The README already said `download` retried; now it does.
+- **A transfer shorter than the size the device announces is treated as
+  failed** and retried, instead of being kept. Previously `sync` and
+  `watch` only rejected transfers under half the size estimated from
+  duration, and `download` checked nothing.
 
 ## [1.1.0] — 2026-09-19
 
