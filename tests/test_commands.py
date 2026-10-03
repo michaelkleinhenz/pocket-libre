@@ -179,6 +179,42 @@ async def test_wifi_start_still_bundles_both_steps(cmd, monkeypatch):
     assert recorder.sent == ["U&WIFI", "WIFIO"]
 
 
+# ── USB mass storage ────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled, command", [(True, "USB&1"), (False, "USB&0")])
+async def test_set_usb_sends_flag(cmd, monkeypatch, enabled, command):
+    recorder = _RecordingSend()
+    monkeypatch.setattr(cmd, "_send", recorder)
+    await cmd.set_usb(enabled)
+    assert recorder.sent == [command]
+
+
+@pytest.mark.asyncio
+async def test_get_usb_sends_get_command(cmd, monkeypatch):
+    recorder = _RecordingSend()
+    monkeypatch.setattr(cmd, "_send", recorder)
+    await cmd.get_usb()
+    assert recorder.sent == ["GET&USB"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "responses, expected",
+    [
+        (["MCU&USB&1"], True),
+        (["MCU&USB&0"], False),
+        ([], None),
+        (["MCU&USB&maybe"], None),
+        (["MCU&BAT&87"], None),
+    ],
+)
+async def test_get_usb_parses_state(cmd, monkeypatch, responses, expected):
+    monkeypatch.setattr(cmd, "_send", _FakeSend(responses))
+    assert await cmd.get_usb() is expected
+
+
 # ── Recording field semantics ───────────────────
 #
 # The MCU&F trailing field is a duration in seconds, not a size in KB.
