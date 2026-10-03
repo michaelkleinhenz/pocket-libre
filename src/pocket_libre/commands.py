@@ -203,6 +203,25 @@ class PocketCommander:
         responses = await self._send(f"T&{time_str}")
         return any("MCU&T&OK" in r for r in responses)
 
+    # ── USB Mass Storage ─────────────────────────
+
+    def _parse_usb_state(self, responses: list[str]) -> bool | None:
+        """MCU&USB&1 → True, MCU&USB&0 → False, anything else → None."""
+        vals = self._parse_response(responses, "USB")
+        if vals and vals[-1].strip() in ("0", "1"):
+            return vals[-1].strip() == "1"
+        return None
+
+    async def get_usb(self) -> bool | None:
+        """Whether the device exposes its storage as a USB drive. None if unknown."""
+        responses = await self._send("GET&USB")
+        return self._parse_usb_state(responses)
+
+    async def set_usb(self, enabled: bool) -> bool | None:
+        """Enable or disable USB mass storage. Returns the state the device reports."""
+        responses = await self._send(f"USB&{1 if enabled else 0}")
+        return self._parse_usb_state(responses)
+
     # ── File Listing ─────────────────────────────
 
     async def list_dirs(self) -> list[str]:

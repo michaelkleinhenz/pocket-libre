@@ -86,6 +86,29 @@ Format: `MCU&F&<date>&<timestamp>&<duration_seconds>`
 > 4000 B/s (32 kbps) to estimate the size on disk.
 Ends with: `MCU&LIST&<count>` (zero-padded)
 
+### USB Mass Storage
+
+The device can expose its storage as a USB drive. The vendor app switches this
+on and off over BLE, then reads the state back:
+
+```
+>> APP&USB&1
+<< MCU&USB&1
+>> APP&GET&USB
+<< MCU&USB&1
+```
+
+| Command | Response | Notes |
+|---------|----------|-------|
+| `APP&USB&1` | `MCU&USB&1` | Enable USB mass storage |
+| `APP&USB&0` | `MCU&USB&0` | Disable USB mass storage |
+| `APP&GET&USB` | `MCU&USB&<0\|1>` | Read the current state |
+
+Captured from the vendor Android app (HCI snoop log) on 2026-10-03 and
+verified on hardware with `pocket-libre usb on`: the device's storage shows
+up as a USB drive. `GET&USB` is the only `GET&` command seen so far; others
+may exist.
+
 ### BLE File Transfer
 
 ```
