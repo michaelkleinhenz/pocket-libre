@@ -425,11 +425,14 @@ def usb(ctx, mode: str, address: str | None, session_key: str | None):
             ok = await cmd.authenticate(session_key)
             if not ok:
                 console.print("[red]Authentication failed.[/red]")
-                return
+                raise SystemExit(1)
 
+            state = None
             if mode != "status":
-                await cmd.set_usb(mode == "on")
-            state = await cmd.get_usb()
+                state = await cmd.set_usb(mode == "on")
+            # Fall back to querying when the set reply carried no state.
+            if state is None:
+                state = await cmd.get_usb()
 
             if state is None:
                 console.print("[yellow]Device did not report a USB state.[/yellow]")
