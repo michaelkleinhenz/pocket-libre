@@ -408,6 +408,43 @@ def status(ctx, address: str | None, session_key: str | None):
     asyncio.run(_run())
 
 
+@cli.command()
+@click.argument("mode", required=False, type=click.Choice(["on", "off", "status"]), default="status")
+@click.option("--address", default=None, help="BLE address of your Pocket device.")
+@click.option("--key", "session_key", default=None, help="Session key for authentication.")
+@click.pass_context
+def usb(ctx, mode: str, address: str | None, session_key: str | None):
+    """Show or set USB mass storage mode (on, off, status)."""
+    config = ctx.obj["config"]
+    address = _require_address(address, config)
+    session_key = _require_session_key(session_key, config)
+
+    async def _run():
+        async with PocketCommander(address) as cmd:
+            console.print("[dim]Authenticating...[/dim]")
+            ok = await cmd.authenticate(session_key)
+            if not ok:
+                console.print("[red]Authentication failed.[/red]")
+                raise SystemExit(1)
+
+            state = None
+            if mode != "status":
+                state = await cmd.set_usb(mode == "on")
+            # Fall back to querying when the set reply carried no state.
+            if state is None:
+                state = await cmd.get_usb()
+
+            if state is None:
+                console.print("[yellow]Device did not report a USB state.[/yellow]")
+                raise SystemExit(1)
+            console.print(f"[bold]USB mass storage:[/bold] {'on' if state else 'off'}")
+            if mode != "status" and state != (mode == "on"):
+                console.print(f"[red]Device did not switch USB {mode}.[/red]")
+                raise SystemExit(1)
+
+    asyncio.run(_run())
+
+
 @cli.command("list")
 @click.option("--address", default=None, help="BLE address of your Pocket device.")
 @click.option("--key", "session_key", default=None, help="Session key.")

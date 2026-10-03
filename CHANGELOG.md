@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **USB mass storage control.** `pocket-libre usb on|off|status` switches the
+  device's USB drive mode over BLE (`APP&USB&<0|1>`, read back with
+  `APP&GET&USB`), decoded from an HCI snoop capture of the vendor app.
+
 ## [1.1.0] — 2026-09-19
 
 Acts on a firmware 1.8 field report
