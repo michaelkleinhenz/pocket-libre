@@ -6,6 +6,62 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+WiFi transfer works on firmware 1.8. It was decoded from the vendor app's
+Android HCI snoop log during a real "Quick Transfer", reproduced from a Linux
+laptop, and verified byte for byte against BLE downloads.
+
+### Added
+
+- **`wifi-transfer` downloads recordings over WiFi at about 1 MB/s** on
+  firmware 1.8 (WiFi firmware V9). It raises the device's access point, joins
+  it, requests each recording as a BLE transfer and switches it to WiFi with
+  `APP&U&WIFI`, then reads the raw MP3 from TCP `192.168.200.1:8475`. One
+  recording with `--date`/`--timestamp`; otherwise every recording not yet
+  downloaded (`--since`, `--output-dir`, `--overwrite`). It restarts the AP
+  after every two files, because the device serves only two transfer
+  connections per AP session. It refuses other firmware without `--force`, and
+  a battery under 10%.
+- `hostwifi`: joins the device's hidden network and switches back afterwards,
+  with NetworkManager (Linux), netsh (Windows), or by hand (`--wifi manual`,
+  for macOS). It never re-issues a connect while one is in progress, because
+  that drops the transfer socket.
+- `wifi.WifiSession`, `wifi.receive_file` and `wifi.open_transfer_socket`, the
+  transfer as a library.
+- `PocketCommander.messages`, `mark()`, `wait_for_message()`, `request()` and
+  `send_nowait()`, for replies that arrive on their own schedule (`WIFIS`
+  changes, `MCU&U&WIFI`, `MCU&OFF`). Also `start_audio_sink()`: a BLE transfer
+  only runs while the audio characteristic is subscribed.
+- `protocol.TRANSFER_PORT`, `END_MARKER`, `FILES_PER_AP_SESSION`, and
+  correctly named WiFi status codes.
+- PROTOCOL.md documents the WiFi transfer:
+  - the vendor app's exact sequence and the client protocol;
+  - the 10-byte end marker and the two-connections-per-AP limit;
+  - `MCU&SHUT` when switching with no connection open;
+  - BLE transfer details measured on 1.8 (notification sizes, `MCU&OFF`, the
+    required audio subscription, about 26–65 KB/s);
+  - more commands (`MAC`, `GET&USB`, `WPING`) and the app's connect sequence.
+
+### Changed
+
+- **WiFi status codes were mislabelled.** `MCU&WIFIS&3` is "AP coming up" and
+  `2` is "waiting for a client", not the other way round. `1` means a client
+  has joined. `WIFI_STATUS_STARTING` is now 3, and `WIFI_STATUS_WAITING_FOR_CLIENT`
+  and `WIFI_STATUS_CLIENT_JOINED` were added. `WIFI_STATUS_CONNECTING` is
+  gone.
+- `wifi-discover` is now a diagnostic for other firmware; it names 8475 when
+  it finds it.
+- `PocketCommander` splits notifications that carry several `MCU&` replies
+  (e.g. `MCU&WIFIOMCU&OFF`).
+- PROTOCOL.md corrects earlier guesses: `RANGE` is the BLE byte-range
+  download, not the WiFi verb; `APP&WIFI&SWITCH` isn't implemented on 1.8; and
+  staging a file before `APP&WIFIO` isn't required.
+
+### Removed
+
+- The HTTP escape hatch: `wifi-transfer --url`, the `wifi.url_template`
+  setting, `wifi.download_file()` and `wifi.build_url()`. No firmware serves
+  files over HTTP.
+
 ## [1.1.0] — 2026-09-19
 
 Acts on a firmware 1.8 field report

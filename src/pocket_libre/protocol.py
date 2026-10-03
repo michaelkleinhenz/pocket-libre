@@ -89,11 +89,32 @@ DEFAULT_BITRATE_KBPS = 32
 CMD_PREFIX = "APP&"
 RSP_PREFIX = "MCU&"
 
-# WiFi status codes (from MCU&WIFIS&N)
-WIFI_STATUS_INIT = 0       # WiFi mode initializing
-WIFI_STATUS_READY = 1      # Ready for transfer
-WIFI_STATUS_STARTING = 2   # AP starting up
-WIFI_STATUS_CONNECTING = 3 # AP created, waiting for client
+# WiFi status codes (from MCU&WIFIS&N). Meanings confirmed on firmware 1.8 by
+# timing them against the client's join: 3 comes right after APP&WIFIO, 2 once
+# the AP can take a client, 1 only after a client has joined and got a lease.
+WIFI_STATUS_OFF = 0                # Access point down
+WIFI_STATUS_CLIENT_JOINED = 1      # A client is on the AP: ready for transfer
+WIFI_STATUS_WAITING_FOR_CLIENT = 2 # AP up, no client yet
+WIFI_STATUS_STARTING = 3           # AP coming up
+WIFI_STATUS_READY = WIFI_STATUS_CLIENT_JOINED
+WIFI_STATUS_INIT = WIFI_STATUS_OFF  # former name
+
+
+# ──────────────────────────────────────────────
+# WiFi file transfer (decoded on firmware 1.8 / WiFi firmware V9)
+#
+# The device is the access point and serves one file per TCP connection on
+# TRANSFER_PORT. A file is requested over BLE as a normal Bluetooth transfer
+# (APP&U&<date>&<ts>) and then switched to WiFi with APP&U&WIFI, which is the
+# same order the vendor app uses. The socket then carries the raw MP3 file,
+# exactly MCU&U&<size> bytes, followed by END_MARKER. See PROTOCOL.md.
+# ──────────────────────────────────────────────
+TRANSFER_HOST = "192.168.200.1"
+TRANSFER_PORT = 8475
+END_MARKER = bytes.fromhex("ba5a028f04ba5a028f04")
+# After the second transfer connection of an AP session the device stops
+# listening; restarting the AP (WIFIC, WIFIO) resets this.
+FILES_PER_AP_SESSION = 2
 
 # Recording bitrate, in bytes per second (32 kbps MP3).
 #
