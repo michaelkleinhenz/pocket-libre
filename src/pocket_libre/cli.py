@@ -1046,6 +1046,8 @@ def wifi_transfer(ctx, address: str | None, session_key: str | None, date: str |
     Joining needs NetworkManager on Linux or netsh on Windows; on macOS (or
     with --wifi manual) you join the network yourself when asked.
     """
+    from bleak.exc import BleakError
+
     from pocket_libre.commands import is_safe_id
     from pocket_libre.hostwifi import HostWifiError, backend
     from pocket_libre.wifi import DEFAULT_HOST, WifiSession, WifiTransferError
@@ -1064,6 +1066,14 @@ def wifi_transfer(ctx, address: str | None, session_key: str | None, date: str |
 
     def log(text: str) -> None:
         console.print(f"[dim]{text}[/dim]")
+
+    def lost_link(error: Exception | None, not_attempted: int) -> None:
+        detail = f": {error}" if error else ""
+        console.print(f"\n[red]Lost the BLE link{detail}[/red]")
+        if not_attempted:
+            console.print(f"[yellow]{not_attempted} recording(s) not attempted.[/yellow]")
+        console.print("[yellow]The device may need a power-cycle before it "
+                      "connects again.[/yellow]")
 
     async def _run() -> tuple[int, int]:
         async with PocketCommander(address) as cmd:
@@ -1121,9 +1131,14 @@ def wifi_transfer(ctx, address: str | None, session_key: str | None, date: str |
 
                         try:
                             result = await session.download(rec, path, progress_callback=progress)
-                        except WifiTransferError as e:
+                        except (WifiTransferError, BleakError) as e:
                             console.print(f"\n    [red]Failed: {e}[/red]")
                             failed += 1
+                            # A dropped link can also surface as a missing
+                            # reply; either way, nothing more will work.
+                            if isinstance(e, BleakError) or not cmd.connected:
+                                lost_link(None, len(todo) - i)
+                                break
                             continue
                         rate = result.size / result.seconds / 1024 if result.seconds else 0
                         console.print(
@@ -1136,6 +1151,11 @@ def wifi_transfer(ctx, address: str | None, session_key: str | None, date: str |
                         done += 1
             except (WifiTransferError, HostWifiError) as e:
                 raise click.ClickException(str(e)) from e
+            except BleakError as e:
+                # Raised outside a download: raising the AP or cleaning up.
+                if not (done or failed):
+                    raise click.ClickException(f"Lost the BLE link: {e}") from e
+                lost_link(e, len(todo) - done - failed)
             return done, failed
 
     try:

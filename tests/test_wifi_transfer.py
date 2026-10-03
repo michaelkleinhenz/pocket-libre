@@ -20,6 +20,7 @@ import socket
 from types import SimpleNamespace
 
 import pytest
+from bleak.exc import BleakError
 
 from pocket_libre.commands import PocketCommander, Recording, split_messages
 from pocket_libre.hostwifi import parse_netsh_interfaces, split_terse, windows_profile
@@ -31,7 +32,7 @@ from pocket_libre.protocol import (
     WIFI_STATUS_STARTING,
     WIFI_STATUS_WAITING_FOR_CLIENT,
 )
-from pocket_libre.wifi import WifiSession, WifiTransferError, receive_file
+from pocket_libre.wifi import TransferResult, WifiSession, WifiTransferError, receive_file
 
 
 def mp3(n: int) -> bytes:
@@ -237,6 +238,115 @@ async def test_missing_marker_is_reported_but_keeps_the_file(tmp_path):
                                         tmp_path / "a.mp3")
     assert not result.marker_ok
     assert (tmp_path / "a.mp3").read_bytes() == FILES["20261003160116"]
+
+
+@pytest.mark.asyncio
+async def test_refused_connection_restarts_the_ap_for_the_next_file(tmp_path):
+    """If the device stops listening early, the next file gets a fresh AP
+    instead of waiting on the same dead port."""
+    device = FakeDevice(free_port())
+    first, second = list(FILES)[:2]
+    async with session_for(device, FakeHostWifi(device), connect_wait=0.2) as session:
+        await session.download(Recording("2026-10-03", first, 0), tmp_path / "a.mp3")
+        device.server.close()  # stops listening after one connection, not two
+        with pytest.raises(WifiTransferError, match="did not accept"):
+            await session.download(Recording("2026-10-03", second, 0), tmp_path / "b.mp3")
+        await session.download(Recording("2026-10-03", second, 0), tmp_path / "b.mp3")
+    assert device.ap_starts == 2
+    assert (tmp_path / "b.mp3").read_bytes() == FILES[second]
+
+
+# ── The command ─────────────────────────────────
+
+
+class StubCommander:
+    connected = True
+
+    def __init__(self, address):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def authenticate(self, key):
+        return True
+
+    async def get_firmware(self):
+        return "1.8.0"
+
+    async def get_battery(self):
+        return 80
+
+    async def list_all_recordings(self):
+        return [Recording("2026-10-03", ts, 0) for ts in FILES]
+
+
+def run_wifi_transfer(monkeypatch, tmp_path, second_download_fails):
+    """Run the command over three recordings; the second download fails."""
+    from click.testing import CliRunner
+
+    from pocket_libre import cli as cli_module
+
+    class StubSession:
+        def __init__(self, cmd, host_wifi, log):
+            self.cmd = cmd
+            self.calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def download(self, rec, path, progress_callback=None):
+            self.calls += 1
+            if self.calls == 2:
+                second_download_fails(self.cmd)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"mp3")
+            return TransferResult(path, 3, 1.0, True)
+
+    monkeypatch.setattr(cli_module, "load_config", lambda: {})
+    monkeypatch.setattr(cli_module, "PocketCommander", StubCommander)
+    monkeypatch.setattr("pocket_libre.hostwifi.backend", lambda *a: object())
+    monkeypatch.setattr("pocket_libre.wifi.WifiSession", StubSession)
+    return CliRunner().invoke(cli_module.cli, [
+        "wifi-transfer", "--address", "AA:BB:CC:DD:EE:FF", "--key", "k",
+        "--output-dir", str(tmp_path),
+    ])
+
+
+def _bleak_error(cmd):
+    raise BleakError("Not connected")
+
+
+def _silent_disconnect(cmd):
+    cmd.connected = False  # replies stop: surfaces as a missing answer
+    raise WifiTransferError("The device did not answer the file request (MCU&U).")
+
+
+@pytest.mark.parametrize("fail", [_bleak_error, _silent_disconnect])
+def test_lost_ble_link_stops_the_batch_and_still_summarises(monkeypatch, tmp_path, fail):
+    result = run_wifi_transfer(monkeypatch, tmp_path, fail)
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "Lost the BLE link" in result.output
+    assert "1 recording(s) not attempted" in result.output
+    assert "1 downloaded, 1 failed" in result.output
+    assert len(list(tmp_path.rglob("*.mp3"))) == 1
+
+
+def test_transfer_error_with_the_link_up_moves_on(monkeypatch, tmp_path):
+    def fail(cmd):
+        raise WifiTransferError("no data")
+
+    result = run_wifi_transfer(monkeypatch, tmp_path, fail)
+    assert result.exit_code == 1
+    assert "Lost the BLE link" not in result.output
+    assert "2 downloaded, 1 failed" in result.output
 
 
 # ── receive_file ────────────────────────────────

@@ -469,7 +469,13 @@ class WifiSession:
             await self.cycle()
         # The connection must be open BEFORE the switch: APP&U&WIFI with no
         # client connected hangs the device until it reports MCU&SHUT.
-        reader, writer = await open_transfer_socket(self.host, self.port, wait=self.connect_wait)
+        try:
+            reader, writer = await open_transfer_socket(self.host, self.port,
+                                                        wait=self.connect_wait)
+        except BaseException:
+            # Not listening on this AP any more; the next file gets a fresh one.
+            self.connections = self.files_per_session
+            raise
         self.connections += 1
         started = time.monotonic()
         try:
