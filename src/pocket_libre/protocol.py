@@ -112,9 +112,14 @@ WIFI_STATUS_INIT = WIFI_STATUS_OFF  # former name
 TRANSFER_HOST = "192.168.200.1"
 TRANSFER_PORT = 8475
 END_MARKER = bytes.fromhex("ba5a028f04ba5a028f04")
-# After the second transfer connection of an AP session the device stops
-# listening; restarting the AP (WIFIC, WIFIO) resets this.
-FILES_PER_AP_SESSION = 2
+# Transfer connections the device serves per AP session, by firmware
+# major.minor. On 1.8 it stops listening after the second; on 1.7 it resets
+# the second before sending any data. Restarting the AP (WIFIC, WIFIO) resets
+# the count.
+FILES_PER_AP_SESSION = {"1.7": 1, "1.8": 2}
+# For firmware not listed: one per session works on every version tested, at
+# the cost of an AP restart (about 15 s) per file.
+DEFAULT_FILES_PER_AP_SESSION = 1
 
 # Recording bitrate, in bytes per second (32 kbps MP3).
 #

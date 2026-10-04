@@ -163,13 +163,16 @@ only runs while the audio characteristic is subscribed;** without a subscriber
 the device sends `MCU&OFF` right away.
 
 Throughput: about 3–4 KB/s in the original 1.3.3 capture. On firmware 1.8,
-about 26 KB/s to a Linux laptop and about 65 KB/s to an Android phone. WiFi
+about 26 KB/s to a Linux laptop and about 65 KB/s to an Android phone. On
+firmware 1.7, about 53–56 KB/s to a Mac. WiFi
 transfer (below) runs at about 1 MB/s.
 
 ### WiFi Transfer (Fast) — decoded on firmware 1.8
 
 **Works on firmware 1.8 with WiFi firmware V9**, about 0.7–1.1 MB/s, verified
-byte for byte against BLE downloads of the same recordings.
+byte for byte against BLE downloads of the same recordings. **Also works on
+firmware 1.7 (WiFi firmware V9)**, with one difference: one transfer
+connection per AP session instead of two (see step 5 below).
 `pocket-libre wifi-transfer` implements it. Decoded on 2026-10-03 from the
 vendor app's Android HCI snoop log during a real "Quick Transfer", then
 reproduced from a Linux laptop acting as the WiFi client.
@@ -221,9 +224,11 @@ never see it switch.
       BLE at the same moment.
    5. Close the connection. The device closes its side at once, refuses new
       connections for about 1.5–3.5 s, then listens again.
-5. **At most two transfer connections per AP session.** After the second, port
-   8475 stops listening for good. Restart the AP for more files: `APP&WIFIC`,
-   leave the network, `APP&WIFIO`, rejoin, wait for `WIFIS=1` (about 14 s).
+5. **A limited number of transfer connections per AP session: two on 1.8, one
+   on 1.7.** On 1.8, port 8475 stops listening for good after the second. On
+   1.7 the device accepts a second connection, then resets it before sending
+   any data. Restart the AP for more files: `APP&WIFIC`, leave the network,
+   `APP&WIFIO`, rejoin, wait for `WIFIS=1` (about 14 s).
 6. **Finish** with `APP&WIFIC` → `MCU&WIFIC`.
 
 **Never send `APP&U&WIFI` without a transfer connection open.** The device
@@ -241,7 +246,7 @@ client's join:
 | `2` | AP up, waiting for a client |
 | `1` | A client has joined: ready for transfer |
 
-**WiFi AP Details (firmware 1.8):**
+**WiFi AP Details (firmware 1.8; 1.7 uses the same address and port):**
 
 | | |
 |---|---|
@@ -250,7 +255,7 @@ client's join:
 | Password | First 8 characters of the session key |
 | Device | `192.168.200.1`, the DHCP server; leases `192.168.200.2/24` for 7200 s |
 | Routing | No default route; DHCP names the device as DNS server, but port 53 answered on one device and was closed on another |
-| Listening | Only TCP `8475`, and only while the AP is up and has served fewer than two connections |
+| Listening | Only TCP `8475`, and only while the AP is up and has transfer connections left (two per session on 1.8, one on 1.7) |
 
 **What else was learned on the way:**
 
@@ -301,8 +306,8 @@ inferred an HTTP server at `192.168.4.1` from it, which was wrong.
 
 **Still unknown:**
 
-- Why 8475 stops listening after two connections, and whether one connection
-  can carry several files. The app has a "Multiple file download with same wifi
+- Why the device serves only two connections per AP session (one on 1.7),
+  and whether one connection can carry several files. The app has a "Multiple file download with same wifi
   socket" check. On 1.8 a second file on the same connection never arrived.
 - What the 10-byte end marker encodes.
 - The app's size threshold for using WiFi, and whether other firmware (newer,

@@ -4,9 +4,11 @@ FakeDevice models what was observed on a real recorder (firmware 1.8, WiFi
 firmware V9; see PROTOCOL.md):
 
   * APP&WIFIO raises the AP; WIFIS goes 3 -> 2, and 1 once a client joins.
-  * The transfer socket listens while the AP is up, for at most two
-    connections per AP session; after that it refuses until APP&WIFIC +
-    APP&WIFIO restart the AP.
+  * The transfer socket listens while the AP is up, for a limited number of
+    connections per AP session. On 1.8 that is two, after which it refuses
+    until APP&WIFIC + APP&WIFIO restart the AP. On 1.7 (from a field report)
+    it is one: the second connection is accepted and then reset before any
+    data.
   * APP&U&<date>&<ts> answers MCU&U&<size>; APP&U&WIFI then answers
     MCU&U&WIFI and MCU&U&<size>, sends the file and the 10-byte end marker on
     the open connection, and reports MCU&OFF.
@@ -17,6 +19,7 @@ they pin the client to the behaviour that was measured.
 
 import asyncio
 import socket
+import struct
 from types import SimpleNamespace
 
 import pytest
@@ -26,13 +29,18 @@ from pocket_libre.commands import PocketCommander, Recording, split_messages
 from pocket_libre.hostwifi import parse_netsh_interfaces, split_terse, windows_profile
 from pocket_libre.protocol import (
     END_MARKER,
-    FILES_PER_AP_SESSION,
     TRANSFER_PORT,
     WIFI_STATUS_CLIENT_JOINED,
     WIFI_STATUS_STARTING,
     WIFI_STATUS_WAITING_FOR_CLIENT,
 )
-from pocket_libre.wifi import TransferResult, WifiSession, WifiTransferError, receive_file
+from pocket_libre.wifi import (
+    TransferResult,
+    WifiSession,
+    WifiTransferError,
+    files_per_ap_session,
+    receive_file,
+)
 
 
 def mp3(n: int) -> bytes:
@@ -54,10 +62,14 @@ def free_port() -> int:
 
 
 class FakeDevice:
-    def __init__(self, port: int, files: dict[str, bytes] = FILES, send_marker: bool = True):
+    def __init__(self, port: int, files: dict[str, bytes] = FILES, send_marker: bool = True,
+                 firmware: str = "1.8"):
         self.port = port
         self.files = files
         self.send_marker = send_marker
+        self.firmware = firmware
+        self.per_session = files_per_ap_session(firmware)
+        self.resets = 0
         self.status = 0
         self.server: asyncio.AbstractServer | None = None
         self.accepted = 0
@@ -70,8 +82,15 @@ class FakeDevice:
 
     async def _serve(self, reader, writer):
         self.accepted += 1
+        if self.firmware == "1.7" and self.accepted > self.per_session:
+            self.resets += 1
+            # Reset before any data: SO_LINGER 0 makes close() send an RST.
+            sock = writer.get_extra_info("socket")
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            writer.transport.abort()
+            return
         self.writer = writer
-        if self.accepted >= FILES_PER_AP_SESSION:
+        if self.firmware == "1.8" and self.accepted >= self.per_session:
             self.server.close()  # stops listening: further connects are refused
         try:
             await reader.read()  # until the client closes
@@ -103,7 +122,8 @@ class FakeDevice:
             self.reply("MCU&WPING")
         elif command == "U&WIFI":
             if self.writer is None:
-                self.violations.append("U&WIFI without an open connection")
+                if not self.resets:
+                    self.violations.append("U&WIFI without an open connection")
                 return
             self.reply("MCU&U&WIFIMCU&U&" + str(len(self.staged)))  # two in one notification
             self.writer.write(self.staged + (END_MARKER if self.send_marker else b""))
@@ -159,6 +179,7 @@ class FakeHostWifi:
 
 
 def session_for(device, host_wifi, **kw):
+    kw.setdefault("files_per_session", device.per_session)
     return WifiSession(FakeCommander(device), host_wifi, host="127.0.0.1", port=device.port,
                        heartbeat=0.05, status_interval=0.02, switch_delay=0.01,
                        first_byte_timeout=2, idle_timeout=2, **kw)
@@ -256,11 +277,48 @@ async def test_refused_connection_restarts_the_ap_for_the_next_file(tmp_path):
     assert (tmp_path / "b.mp3").read_bytes() == FILES[second]
 
 
+@pytest.mark.asyncio
+async def test_firmware_1_7_restarts_the_ap_for_every_file(tmp_path):
+    device = FakeDevice(free_port(), firmware="1.7")
+    names = list(FILES)
+    async with session_for(device, FakeHostWifi(device)) as session:
+        for ts in names:
+            await session.download(Recording("2026-10-03", ts, 0), tmp_path / f"{ts}.mp3")
+    for ts in names:
+        assert (tmp_path / f"{ts}.mp3").read_bytes() == FILES[ts]
+    assert device.ap_starts == 3 and device.resets == 0
+    assert device.violations == []
+
+
+@pytest.mark.asyncio
+async def test_reset_connection_fails_one_file_and_the_next_gets_a_fresh_ap(tmp_path):
+    """The 1.7 field report: two files per session against a device that
+    serves one. The reset must fail that file, not crash the run."""
+    device = FakeDevice(free_port(), firmware="1.7")
+    first, second = list(FILES)[:2]
+    async with session_for(device, FakeHostWifi(device), files_per_session=2) as session:
+        await session.download(Recording("2026-10-03", first, 0), tmp_path / "a.mp3")
+        with pytest.raises(WifiTransferError, match="connection lost at 0 of"):
+            await session.download(Recording("2026-10-03", second, 0), tmp_path / "b.mp3")
+        assert not (tmp_path / "b.mp3").exists() and not list(tmp_path.glob("*.part"))
+        await session.download(Recording("2026-10-03", second, 0), tmp_path / "b.mp3")
+    assert device.resets == 1 and device.ap_starts == 2
+    assert (tmp_path / "b.mp3").read_bytes() == FILES[second]
+
+
+def test_files_per_ap_session_by_firmware():
+    assert files_per_ap_session("1.8") == files_per_ap_session("1.8.0") == 2
+    assert files_per_ap_session("1.7") == files_per_ap_session("1.7.2") == 1
+    assert files_per_ap_session("1.3.3") == 1  # untested: the safe choice
+    assert files_per_ap_session("1.80") == 1
+
+
 # ── The command ─────────────────────────────────
 
 
 class StubCommander:
     connected = True
+    firmware = "1.8.0"
 
     def __init__(self, address):
         pass
@@ -275,7 +333,7 @@ class StubCommander:
         return True
 
     async def get_firmware(self):
-        return "1.8.0"
+        return self.firmware
 
     async def get_battery(self):
         return 80
@@ -284,16 +342,19 @@ class StubCommander:
         return [Recording("2026-10-03", ts, 0) for ts in FILES]
 
 
-def run_wifi_transfer(monkeypatch, tmp_path, second_download_fails):
+def run_wifi_transfer(monkeypatch, tmp_path, second_download_fails=None,
+                      firmware="1.8.0", args=(), sessions=None):
     """Run the command over three recordings; the second download fails."""
     from click.testing import CliRunner
 
     from pocket_libre import cli as cli_module
 
     class StubSession:
-        def __init__(self, cmd, host_wifi, log):
+        def __init__(self, cmd, host_wifi, log, files_per_session):
             self.cmd = cmd
             self.calls = 0
+            if sessions is not None:
+                sessions.append(files_per_session)
 
         async def __aenter__(self):
             return self
@@ -303,19 +364,20 @@ def run_wifi_transfer(monkeypatch, tmp_path, second_download_fails):
 
         async def download(self, rec, path, progress_callback=None):
             self.calls += 1
-            if self.calls == 2:
+            if self.calls == 2 and second_download_fails:
                 second_download_fails(self.cmd)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"mp3")
             return TransferResult(path, 3, 1.0, True)
 
     monkeypatch.setattr(cli_module, "load_config", lambda: {})
+    monkeypatch.setattr(StubCommander, "firmware", firmware)
     monkeypatch.setattr(cli_module, "PocketCommander", StubCommander)
     monkeypatch.setattr("pocket_libre.hostwifi.backend", lambda *a: object())
     monkeypatch.setattr("pocket_libre.wifi.WifiSession", StubSession)
     return CliRunner().invoke(cli_module.cli, [
         "wifi-transfer", "--address", "AA:BB:CC:DD:EE:FF", "--key", "k",
-        "--output-dir", str(tmp_path),
+        "--output-dir", str(tmp_path), *args,
     ])
 
 
@@ -349,6 +411,25 @@ def test_transfer_error_with_the_link_up_moves_on(monkeypatch, tmp_path):
     assert "2 downloaded, 1 failed" in result.output
 
 
+@pytest.mark.parametrize("firmware, per_session", [("1.8.0", 2), ("1.7", 1)])
+def test_files_per_session_follows_the_firmware(monkeypatch, tmp_path, firmware, per_session):
+    sessions = []
+    result = run_wifi_transfer(monkeypatch, tmp_path, firmware=firmware, sessions=sessions)
+    assert result.exit_code == 0, result.output
+    assert sessions == [per_session]
+
+
+def test_untested_firmware_needs_force_and_gets_one_file_per_session(monkeypatch, tmp_path):
+    result = run_wifi_transfer(monkeypatch, tmp_path, firmware="1.3.3")
+    assert result.exit_code != 0 and "--force" in result.output
+
+    sessions = []
+    result = run_wifi_transfer(monkeypatch, tmp_path, firmware="1.3.3", args=["--force"],
+                               sessions=sessions)
+    assert result.exit_code == 0, result.output
+    assert sessions == [1]
+
+
 # ── receive_file ────────────────────────────────
 
 
@@ -379,6 +460,42 @@ async def test_receive_file_times_out_without_data(tmp_path):
     with pytest.raises(WifiTransferError, match="no data"):
         await receive_file(_reader(b"", eof=False), 10, tmp_path / "f.mp3", first_byte_timeout=0.1)
     assert list(tmp_path.iterdir()) == []
+
+
+class ScriptedReader:
+    """read() returns these chunks in turn, raising any that are exceptions."""
+
+    def __init__(self, *steps):
+        self.steps = list(steps)
+
+    async def read(self, n=-1):
+        step = self.steps.pop(0) if self.steps else b""
+        if isinstance(step, BaseException):
+            raise step
+        return step
+
+
+@pytest.mark.asyncio
+async def test_receive_file_turns_a_reset_into_a_transfer_error(tmp_path):
+    reader = ScriptedReader(mp3(100), ConnectionResetError(104, "Connection reset by peer"))
+    with pytest.raises(WifiTransferError, match="connection lost at 100 of 5,000"):
+        await receive_file(reader, 5000, tmp_path / "f.mp3")
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_receive_file_keeps_a_complete_file_reset_before_the_marker(tmp_path):
+    body = mp3(5000)
+    reader = ScriptedReader(body, ConnectionResetError(104, "Connection reset by peer"))
+    assert await receive_file(reader, len(body), tmp_path / "f.mp3") is False
+    assert (tmp_path / "f.mp3").read_bytes() == body
+
+
+@pytest.mark.asyncio
+async def test_receive_file_turns_a_local_write_error_into_a_transfer_error(tmp_path):
+    (tmp_path / "taken").write_text("a file, not a directory")
+    with pytest.raises(WifiTransferError, match="could not write"):
+        await receive_file(_reader(mp3(100)), 100, tmp_path / "taken" / "f.mp3")
 
 
 # ── Protocol details ────────────────────────────

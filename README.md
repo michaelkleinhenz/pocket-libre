@@ -56,23 +56,27 @@ Firmware matters more than you would expect — the device's WiFi behaviour
 differs enough between versions that a sequence confirmed on one can strand
 another. Check yours with `pocket-libre status`.
 
-| | 1.3.3 | 1.8 |
-|---|---|---|
-| Scan, connect, authenticate | Works | Works |
-| Status, storage, file listing | Works | Works |
-| BLE download (`download`, `sync`, `watch`) | Works | Works |
-| Transcribe, diarize, summarize, web UI | Works | Works |
-| WiFi AP handshake | Works | Works |
-| WiFi file transfer (`wifi-transfer`) | Untested | **Works** (WiFi firmware V9) |
+| | 1.3.3 | 1.7 | 1.8 |
+|---|---|---|---|
+| Scan, connect, authenticate | Works | Works | Works |
+| Status, storage, file listing | Works | Works | Works |
+| BLE download (`download`, `sync`, `watch`) | Works | Works | Works |
+| Transcribe, diarize, summarize, web UI | Works | Works | Works |
+| WiFi AP handshake | Works | Works | Works |
+| WiFi file transfer (`wifi-transfer`) | Untested | **Works** (WiFi firmware V9) | **Works** (WiFi firmware V9) |
 
-**Everything works on firmware 1.8.** The BLE path is slower (tens of KB/s on
+The 1.7 results come from a field report
+([#9](https://github.com/shahcolate/pocket-libre/pull/9)) on WiFi firmware V9.
+
+**Everything works on firmware 1.7 and 1.8.** The BLE path is slower (tens of KB/s on
 1.8, as little as 3–4 KB/s on 1.3.3) but it is what `download`, `sync` and
 `watch` use. `wifi-transfer` pulls recordings over the device's WiFi access
 point at about 1 MB/s; see [WiFi transfer](#wifi-transfer).
 
-WiFi transfer is decoded for firmware 1.8 only, and `wifi-transfer` refuses
-other firmware unless you pass `--force`. On 1.3.3 the BLE side looks the same,
-but nobody has tried it.
+WiFi transfer works on firmware 1.7 and 1.8, and `wifi-transfer` refuses
+other firmware unless you pass `--force`; it then restarts the access point
+for every file, which works on both known versions. On 1.3.3 the BLE side
+looks the same, but nobody has tried it.
 
 Other firmware versions are untested. If you have one, `pocket-libre status`
 and `pocket-libre explore` output would be genuinely useful in an issue.
@@ -242,8 +246,8 @@ proprietary codec. [PROTOCOL.md](PROTOCOL.md) has the full command reference.
 
 ## WiFi transfer
 
-On firmware 1.8 the device can raise a WiFi access point and serve recordings
-over it at about 1 MB/s, instead of the tens of KB/s that BLE manages. An hour
+On firmware 1.7 and 1.8 the device can raise a WiFi access point and serve
+recordings over it at about 1 MB/s, instead of the tens of KB/s that BLE manages. An hour
 of audio (about 14 MB) takes 15–20 s instead of many minutes.
 
 ```bash
@@ -259,15 +263,15 @@ pocket-libre wifi-transfer --date 2026-10-03 --timestamp 20261003143216
 
 What it does:
 
-1. Connects over BLE and authenticates. It checks the firmware (1.8) and the
-   battery (above 10%).
+1. Connects over BLE and authenticates. It checks the firmware (1.7 or 1.8)
+   and the battery (above 10%).
 2. Raises the device's access point and moves **this machine's WiFi** onto it.
    The network is hidden and WPA2-protected; its password is the first 8
    characters of your session key.
 3. Requests each recording as a BLE transfer and switches it to WiFi, which is
    how the vendor app does it, then saves the file. The device serves two files
-   per access-point session, so for more files the AP is restarted in between
-   (about 15 s each time).
+   per access-point session on 1.8 and one on 1.7, so the AP is restarted in
+   between (about 15 s each time).
 4. Lowers the access point and puts this machine back on its usual network. It
    does this after errors and Ctrl-C too.
 
@@ -275,7 +279,9 @@ Requirements and caveats:
 
 - **Joining the network automatically** needs NetworkManager on Linux, or
   netsh on Windows. On macOS, or with `--wifi manual`, the command prints the
-  network name and password, and you join it yourself while it waits.
+  network name and password, and you join it yourself while it waits. The
+  network is hidden, so on macOS that's **Other Network…** in the WiFi menu,
+  once per access-point session: before every file on firmware 1.7.
 - **While it runs, this machine has no internet over WiFi.** With Ethernet
   connected you keep internet over the cable. On Linux, the temporary profile
   doesn't take over the default route.
@@ -318,7 +324,7 @@ changes if you sign in as someone else. Re-capture it with the
 [logcat method](#getting-your-session-key). Keys are 16 characters.
 
 **Downloads are slow.** That is expected over BLE: tens of KB/s on firmware
-1.8, and 3–4 KB/s on 1.3.3. On firmware 1.8, `pocket-libre wifi-transfer`
+1.7 and 1.8, and 3–4 KB/s on 1.3.3. On 1.7 and 1.8, `pocket-libre wifi-transfer`
 runs at about 1 MB/s. Otherwise, `pocket-libre watch` runs in the background
 and syncs new recordings as they appear.
 
@@ -350,6 +356,7 @@ device's WiFi password.
 - [x] Auto-connect and background sync (`watch`)
 - [x] WiFi AP handshake (BLE side), firmware 1.8 sequence
 - [x] WiFi transfer socket (TCP 8475) and stream format decoded (firmware 1.8)
+- [x] WiFi transfer confirmed on firmware 1.7 (one file per access-point session)
 - [x] `wifi-transfer` over WiFi, with automatic join on Linux and Windows
 - [ ] Several files over one WiFi connection
 - [ ] WiFi transfer on other firmware

@@ -6,7 +6,7 @@ shared what they found.
 ## What's most useful
 
 1. **WiFi transfer on other firmware.** It is decoded and working on firmware
-   1.8 (see `PROTOCOL.md`). On anything else, run
+   1.8, and confirmed on 1.7 (see `PROTOCOL.md`). On anything else, run
    `pocket-libre wifi-transfer --force` and report what happens, with
    `pocket-libre status` output. An Android HCI snoop log of the vendor app's
    "Quick Transfer" is the best evidence for how a firmware does it.

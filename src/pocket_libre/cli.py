@@ -969,8 +969,8 @@ def wifi_discover(host: str | None, start_port: int, end_port: int, force: bool)
     """Sweep the device's WiFi AP for listening sockets.
 
     \b
-    A diagnostic for firmware other than 1.8. On 1.8 the transfer socket is
-    TCP 8475 (see PROTOCOL.md), and 'wifi-transfer' uses it. Join the
+    A diagnostic for firmware other than 1.7 and 1.8. On those the transfer
+    socket is TCP 8475 (see PROTOCOL.md), and 'wifi-transfer' uses it. Join the
     device's WiFi network first; this does not raise the AP itself.
     """
     from pocket_libre.protocol import TRANSFER_PORT
@@ -996,12 +996,12 @@ def wifi_discover(host: str | None, start_port: int, end_port: int, force: bool)
 
     if report.scan.open_ports:
         listed = ", ".join(str(port) for port in report.scan.open_ports)
-        known = (f"\n\n{TRANSFER_PORT} is the transfer socket known from firmware 1.8."
+        known = (f"\n\n{TRANSFER_PORT} is the transfer socket known from firmware 1.7 and 1.8."
                  if TRANSFER_PORT in report.scan.open_ports else "")
         console.print(Panel(
             f"[bold]{len(report.scan.open_ports)} open port(s)[/bold] on {target}\n\n"
             f"{listed}{known}\n\n"
-            "On firmware other than 1.8, please report what you found:\n"
+            "On firmware other than 1.7 and 1.8, please report what you found:\n"
             "  https://github.com/shahcolate/pocket-libre/issues",
             border_style="green",
         ))
@@ -1022,9 +1022,9 @@ def wifi_discover(host: str | None, start_port: int, end_port: int, force: bool)
         console.print(Panel(
             f"[bold]Nothing listening[/bold] on {target}\n\n"
             f"Swept {report.scan.scanned:,} ports from {report.local_address}.\n\n"
-            f"On firmware 1.8, {TRANSFER_PORT} listens only while the AP is up and\n"
-            "has served fewer than two transfers. On other firmware, please report\n"
-            "this result:\n"
+            f"On firmware 1.7 and 1.8, {TRANSFER_PORT} listens only while the AP is\n"
+            "up and has transfer connections left (one per AP session on 1.7, two\n"
+            "on 1.8). On other firmware, please report this result:\n"
             "  https://github.com/shahcolate/pocket-libre/issues",
             border_style="yellow",
         ))
@@ -1047,13 +1047,13 @@ def wifi_discover(host: str | None, start_port: int, end_port: int, force: bool)
               help="How to join the device's network: NetworkManager (Linux), netsh "
                    "(Windows), or manual (you join it yourself). Default: by OS.")
 @click.option("--iface", default=None, help="WiFi interface to use (default: the first one).")
-@click.option("--force", is_flag=True, help="Run on firmware other than 1.8.")
+@click.option("--force", is_flag=True, help="Run on firmware other than 1.7 or 1.8.")
 @click.pass_context
 def wifi_transfer(ctx, address: str | None, session_key: str | None, date: str | None,
                   timestamp: str | None, since: str | None, output: str | None,
                   output_dir: str | None, overwrite: bool, wifi_backend: str,
                   iface: str | None, force: bool):
-    """Download recordings over WiFi instead of BLE (firmware 1.8).
+    """Download recordings over WiFi instead of BLE (firmware 1.7 and 1.8).
 
     \b
     Roughly 1 MB/s instead of BLE's few KB/s. Raises the device's WiFi
@@ -1065,8 +1065,8 @@ def wifi_transfer(ctx, address: str | None, session_key: str | None, date: str |
     One recording with --date and --timestamp, otherwise every recording
     (or those from --since on) into <output dir>/<date>/<timestamp>.mp3,
     skipping files that already exist. The device serves two files per
-    access-point session, so for more files the AP is restarted in between
-    (about 15 s each time).
+    access-point session on firmware 1.8 and one on 1.7, so the AP is
+    restarted in between (about 15 s each time).
 
     \b
     Joining needs NetworkManager on Linux or netsh on Windows; on macOS (or
@@ -1076,7 +1076,14 @@ def wifi_transfer(ctx, address: str | None, session_key: str | None, date: str |
 
     from pocket_libre.commands import is_safe_id
     from pocket_libre.hostwifi import HostWifiError, backend
-    from pocket_libre.wifi import DEFAULT_HOST, WifiSession, WifiTransferError
+    from pocket_libre.protocol import FILES_PER_AP_SESSION
+    from pocket_libre.wifi import (
+        DEFAULT_HOST,
+        WifiSession,
+        WifiTransferError,
+        files_per_ap_session,
+        firmware_line,
+    )
 
     if (date is None) != (timestamp is None):
         raise click.UsageError("Pass --date and --timestamp together, or neither.")
@@ -1106,12 +1113,16 @@ def wifi_transfer(ctx, address: str | None, session_key: str | None, date: str |
             if not await cmd.authenticate(session_key):
                 raise click.ClickException("Authentication failed.")
             firmware = await cmd.get_firmware()
-            if not firmware.startswith("1.8") and not force:
-                raise click.ClickException(
-                    f"This device runs firmware {firmware}. WiFi transfer is decoded "
-                    "for firmware 1.8 only;\nother firmware may behave differently. "
-                    "Pass --force to try anyway, or use 'download'."
-                )
+            if firmware_line(firmware) not in FILES_PER_AP_SESSION:
+                if not force:
+                    raise click.ClickException(
+                        f"This device runs firmware {firmware}. WiFi transfer works on "
+                        "firmware 1.7 and 1.8;\nother firmware may behave differently. "
+                        "Pass --force to try anyway, or use 'download'."
+                    )
+                log(f"Firmware {firmware} is untested; restarting the access point "
+                    "for every file.")
+            per_session = files_per_ap_session(firmware)
             battery = await cmd.get_battery()
             if 0 <= battery < 10:
                 raise click.ClickException(
@@ -1146,7 +1157,8 @@ def wifi_transfer(ctx, address: str | None, session_key: str | None, date: str |
 
             done = failed = 0
             try:
-                async with WifiSession(cmd, host_wifi, log=log) as session:
+                async with WifiSession(cmd, host_wifi, log=log,
+                                       files_per_session=per_session) as session:
                     for i, (rec, path) in enumerate(todo, 1):
                         console.print(f"  [{i}/{len(todo)}] {rec.date}/{rec.timestamp}...")
 

@@ -1,4 +1,4 @@
-"""WiFi file transfer over the device's access point (firmware 1.8).
+"""WiFi file transfer over the device's access point (firmware 1.7 and 1.8).
 
 How it works, decoded on firmware 1.8 / WiFi firmware V9 from the vendor app's
 HCI log and confirmed byte for byte against BLE downloads (PROTOCOL.md has the
@@ -14,14 +14,18 @@ full write-up):
      socket then carries the raw MP3 file, exactly <size> bytes, followed by a
      fixed 10-byte END_MARKER; MCU&OFF arrives over BLE at the same time. Close
      the connection afterwards.
-  3. The device serves at most two transfer connections per access-point
-     session; after that 8475 stops listening until the AP is restarted
-     (APP&WIFIC, APP&WIFIO). Never send APP&U&WIFI without a connection open:
+  3. The device serves a limited number of transfer connections per
+     access-point session: two on 1.8, after which 8475 stops listening, and
+     one on 1.7, which resets the second. Restarting the AP (APP&WIFIC,
+     APP&WIFIO) starts over. Never send APP&U&WIFI without a connection open:
      the device hangs in the switch and later reports MCU&SHUT.
+
+Firmware 1.7 (WiFi firmware V9) was confirmed by a field report to follow the
+same protocol apart from that limit.
 
 ``WifiSession`` implements this, using a ``hostwifi`` backend to move this
 machine onto the device's network and back. ``scan_ports`` / ``diagnose`` stay
-as a diagnostic for other firmware: on 1.8 the only listener is 8475.
+as a diagnostic for other firmware: on 1.7 and 1.8 the only listener is 8475.
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ from pathlib import Path
 from rich.console import Console
 
 from pocket_libre.protocol import (
+    DEFAULT_FILES_PER_AP_SESSION,
     END_MARKER,
     FILES_PER_AP_SESSION,
     MP3_SYNC_WORD,
@@ -181,9 +186,9 @@ def scan_ports(
 ) -> PortScan:
     """Sweep `host` for listening TCP sockets.
 
-    Defaults to the full range. On firmware 1.8 the only listener is the
-    transfer socket, 8475, and only while the AP is up and has served fewer
-    than two transfers; a sweep is for checking other firmware.
+    Defaults to the full range. On firmware 1.7 and 1.8 the only listener is
+    the transfer socket, 8475, and only while the AP is up and has transfer
+    connections left; a sweep is for checking other firmware.
 
     An empty result is only meaningful if the sweep actually completed, so
     descriptor exhaustion sets `reliable = False` instead of quietly
@@ -256,6 +261,16 @@ class WifiTransferError(RuntimeError):
     """A WiFi transfer step failed; the message says which."""
 
 
+def firmware_line(firmware: str) -> str:
+    """The major.minor part of a firmware version: "1.8.0" -> "1.8"."""
+    return ".".join(firmware.strip().split(".")[:2])
+
+
+def files_per_ap_session(firmware: str) -> int:
+    """Transfer connections the device serves per AP session on `firmware`."""
+    return FILES_PER_AP_SESSION.get(firmware_line(firmware), DEFAULT_FILES_PER_AP_SESSION)
+
+
 @dataclass
 class TransferResult:
     path: Path
@@ -286,6 +301,14 @@ async def open_transfer_socket(host: str = DEFAULT_HOST, port: int = TRANSFER_PO
         await asyncio.sleep(0.5)
 
 
+def _discard(partial: Path) -> None:
+    """Remove a partial download, without masking the error that ended it."""
+    try:
+        partial.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 async def receive_file(
     reader: asyncio.StreamReader,
     size: int,
@@ -303,12 +326,12 @@ async def receive_file(
     reported but does not fail an otherwise complete file.
     """
     out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     partial = out_path.with_suffix(out_path.suffix + ".part")
     received = 0
     tail = b""
     head = b""
     try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         with partial.open("wb") as fh:
             timeout = first_byte_timeout
             while received < size:
@@ -319,6 +342,10 @@ async def receive_file(
                     raise WifiTransferError(
                         f"{what} after {timeout:g}s (expected {size:,} bytes)"
                     ) from None
+                except OSError as e:  # e.g. reset by the device
+                    raise WifiTransferError(
+                        f"connection lost at {received:,} of {size:,} bytes: {e}"
+                    ) from e
                 if not chunk:
                     raise WifiTransferError(
                         f"device closed the connection at {received:,} of {size:,} bytes"
@@ -335,18 +362,22 @@ async def receive_file(
         while len(tail) < len(END_MARKER):
             try:
                 chunk = await asyncio.wait_for(reader.read(len(END_MARKER) - len(tail)), marker_timeout)
-            except asyncio.TimeoutError:
+            except (asyncio.TimeoutError, OSError):
+                # The file is complete; a reset here only costs the marker.
                 break
             if not chunk:
                 break
             tail += chunk
+        partial.replace(out_path)
+    except OSError as e:  # the local file: disk full, permissions
+        _discard(partial)
+        raise WifiTransferError(f"could not write {out_path}: {e}") from e
     except BaseException:
-        partial.unlink(missing_ok=True)
+        _discard(partial)
         raise
     if size and not head.startswith(MP3_SYNC_WORD[:1]):
         console.print(f"[yellow]{out_path.name} does not start with an MP3 frame "
                       f"({head.hex()}).[/yellow]")
-    partial.replace(out_path)
     return tail[: len(END_MARKER)] == END_MARKER
 
 
@@ -371,7 +402,7 @@ class WifiSession:
         heartbeat: float = 5.0,
         status_interval: float = 1.0,
         switch_delay: float = 0.3,
-        files_per_session: int = FILES_PER_AP_SESSION,
+        files_per_session: int = DEFAULT_FILES_PER_AP_SESSION,
         connect_wait: float = 15.0,
         first_byte_timeout: float = 15.0,
         idle_timeout: float = 15.0,
