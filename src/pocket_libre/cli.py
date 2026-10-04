@@ -408,6 +408,43 @@ def status(ctx, address: str | None, session_key: str | None):
     asyncio.run(_run())
 
 
+@cli.command()
+@click.argument("mode", required=False, type=click.Choice(["on", "off", "status"]), default="status")
+@click.option("--address", default=None, help="BLE address of your Pocket device.")
+@click.option("--key", "session_key", default=None, help="Session key for authentication.")
+@click.pass_context
+def usb(ctx, mode: str, address: str | None, session_key: str | None):
+    """Show or set USB mass storage mode (on, off, status)."""
+    config = ctx.obj["config"]
+    address = _require_address(address, config)
+    session_key = _require_session_key(session_key, config)
+
+    async def _run():
+        async with PocketCommander(address) as cmd:
+            console.print("[dim]Authenticating...[/dim]")
+            ok = await cmd.authenticate(session_key)
+            if not ok:
+                console.print("[red]Authentication failed.[/red]")
+                raise SystemExit(1)
+
+            state = None
+            if mode != "status":
+                state = await cmd.set_usb(mode == "on")
+            # Fall back to querying when the set reply carried no state.
+            if state is None:
+                state = await cmd.get_usb()
+
+            if state is None:
+                console.print("[yellow]Device did not report a USB state.[/yellow]")
+                raise SystemExit(1)
+            console.print(f"[bold]USB mass storage:[/bold] {'on' if state else 'off'}")
+            if mode != "status" and state != (mode == "on"):
+                console.print(f"[red]Device did not switch USB {mode}.[/red]")
+                raise SystemExit(1)
+
+    asyncio.run(_run())
+
+
 @cli.command("list")
 @click.option("--address", default=None, help="BLE address of your Pocket device.")
 @click.option("--key", "session_key", default=None, help="Session key.")
@@ -471,37 +508,27 @@ def download(ctx, address: str | None, session_key: str | None,
     config = ctx.obj["config"]
     address = _require_address(address, config)
     session_key = _require_session_key(session_key, config)
-    from pocket_libre.protocol import MP3_SYNC_WORD
+    from pocket_libre.commands import download_with_retry
 
     async def _run():
-        async with PocketCommander(address) as cmd:
-            console.print("[dim]Authenticating...[/dim]")
-            if not await cmd.authenticate(session_key):
-                console.print("[red]Auth failed.[/red]")
-                return
+        rec = Recording(date=date, timestamp=timestamp, duration_s=0)
+        console.print(f"[bold]Downloading {rec.date}/{rec.timestamp}...[/bold]")
 
-            rec = Recording(date=date, timestamp=timestamp, duration_s=0)
-            console.print(f"[bold]Downloading {rec.date}/{rec.timestamp}...[/bold]")
+        def progress(current, total):
+            if total > 0:
+                pct = 100 * current // total
+                console.print(f"\r[dim]{current:,}/{total:,} bytes ({pct}%)[/dim]", end="")
 
-            def progress(current, total):
-                if total > 0:
-                    pct = 100 * current // total
-                    console.print(f"\r[dim]{current:,}/{total:,} bytes ({pct}%)[/dim]", end="")
+        data = await download_with_retry(address, session_key, rec, progress_callback=progress)
+        console.print()
 
-            data = await cmd.download_ble(rec, progress_callback=progress)
-            console.print()
+        if not data:
+            console.print("[red]Download failed; nothing saved.[/red]")
+            return
 
-            if not data:
-                console.print("[red]No data received.[/red]")
-                return
-
-            mp3_start = data.find(MP3_SYNC_WORD)
-            if mp3_start > 0:
-                data = data[mp3_start:]
-
-            out_path = Path(output) if output else Path(f"{timestamp}.mp3")
-            out_path.write_bytes(data)
-            console.print(f"[bold green]Saved {len(data):,} bytes to {out_path}[/bold green]")
+        out_path = Path(output) if output else Path(f"{timestamp}.mp3")
+        out_path.write_bytes(data)
+        console.print(f"[bold green]Saved {len(data):,} bytes to {out_path}[/bold green]")
 
     asyncio.run(_run())
 
@@ -525,7 +552,7 @@ def download_all(ctx, address: str | None, session_key: str | None,
     address = _require_address(address, config)
     session_key = _require_session_key(session_key, config)
     out_root = Path(get_output_dir(config, output_dir))
-    from pocket_libre.protocol import MP3_SYNC_WORD
+    from pocket_libre.commands import download_with_retry
 
     async def _run():
         async with PocketCommander(address) as cmd:
@@ -533,53 +560,52 @@ def download_all(ctx, address: str | None, session_key: str | None,
             if not await cmd.authenticate(session_key):
                 console.print("[red]Auth failed.[/red]")
                 return []
-
             all_recs = await cmd.list_all_recordings()
-            if since:
-                all_recs = [r for r in all_recs if r.date >= since]
 
-            if not all_recs:
-                console.print("[yellow]No recordings found.[/yellow]")
-                return []
+        if since:
+            all_recs = [r for r in all_recs if r.date >= since]
 
-            console.print(f"[bold]{len(all_recs)} recording(s) to download[/bold]\n")
+        if not all_recs:
+            console.print("[yellow]No recordings found.[/yellow]")
+            return []
 
-            downloaded_paths = []
-            for i, rec in enumerate(all_recs, 1):
-                rec_dir = out_root / rec.date
-                rec_dir.mkdir(parents=True, exist_ok=True)
-                out_path = rec_dir / f"{rec.timestamp}.mp3"
+        console.print(f"[bold]{len(all_recs)} recording(s) to download[/bold]\n")
 
-                if out_path.exists():
-                    console.print(f"  [{i}/{len(all_recs)}] {rec.date}/{rec.timestamp} [dim](already exists, skipping)[/dim]")
-                    downloaded_paths.append(out_path)
-                    continue
+        # Each download gets its own connection, so a dropped link is
+        # retried instead of ending the run (see download_with_retry).
+        downloaded_paths = []
+        for i, rec in enumerate(all_recs, 1):
+            rec_dir = out_root / rec.date
+            rec_dir.mkdir(parents=True, exist_ok=True)
+            out_path = rec_dir / f"{rec.timestamp}.mp3"
 
-                console.print(
-                    f"  [{i}/{len(all_recs)}] {rec.date}/{rec.timestamp} "
-                    f"(~{rec.estimated_bytes // 1024:,} KB)..."
-                )
+            if out_path.exists():
+                console.print(f"  [{i}/{len(all_recs)}] {rec.date}/{rec.timestamp} [dim](already exists, skipping)[/dim]")
+                downloaded_paths.append(out_path)
+                continue
 
-                def progress(current, total):
-                    if total > 0:
-                        pct = 100 * current // total
-                        console.print(f"\r    [dim]{pct}%[/dim]", end="")
+            console.print(
+                f"  [{i}/{len(all_recs)}] {rec.date}/{rec.timestamp} "
+                f"(~{rec.estimated_bytes // 1024:,} KB)..."
+            )
 
-                data = await cmd.download_ble(rec, progress_callback=progress)
-                console.print()
+            def progress(current, total):
+                if total > 0:
+                    pct = 100 * current // total
+                    console.print(f"\r    [dim]{pct}%[/dim]", end="")
 
-                if data:
-                    mp3_start = data.find(MP3_SYNC_WORD)
-                    if mp3_start > 0:
-                        data = data[mp3_start:]
-                    out_path.write_bytes(data)
-                    downloaded_paths.append(out_path)
-                    console.print(f"    [green]Saved {len(data):,} bytes[/green]")
-                else:
-                    console.print("    [red]No data received[/red]")
+            data = await download_with_retry(address, session_key, rec, progress_callback=progress)
+            console.print()
 
-            console.print(f"\n[bold green]Downloaded {len(downloaded_paths)} recording(s) to {out_root}[/bold green]")
-            return downloaded_paths
+            if data:
+                out_path.write_bytes(data)
+                downloaded_paths.append(out_path)
+                console.print(f"    [green]Saved {len(data):,} bytes[/green]")
+            else:
+                console.print("    [red]Download failed; nothing saved. Re-run to try again.[/red]")
+
+        console.print(f"\n[bold green]Downloaded {len(downloaded_paths)} recording(s) to {out_root}[/bold green]")
+        return downloaded_paths
 
     downloaded_paths = asyncio.run(_run())
 

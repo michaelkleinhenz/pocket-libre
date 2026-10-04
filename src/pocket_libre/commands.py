@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 
 from bleak import BleakClient
+from bleak.exc import BleakError
 from rich.console import Console
 
 from pocket_libre.protocol import (
@@ -93,6 +94,8 @@ class PocketCommander:
         self._message_event = asyncio.Event()
         self._write_lock = asyncio.Lock()
         self.discarded_audio_bytes = 0
+        # Size announced by MCU&U for the most recent download_ble.
+        self.last_expected_size = 0
 
     async def __aenter__(self):
         # Scan first to ensure the device is discovered by CoreBluetooth
@@ -296,6 +299,25 @@ class PocketCommander:
         responses = await self._send(f"T&{time_str}")
         return any("MCU&T&OK" in r for r in responses)
 
+    # ── USB Mass Storage ─────────────────────────
+
+    def _parse_usb_state(self, responses: list[str]) -> bool | None:
+        """MCU&USB&1 → True, MCU&USB&0 → False, anything else → None."""
+        vals = self._parse_response(responses, "USB")
+        if vals and vals[-1].strip() in ("0", "1"):
+            return vals[-1].strip() == "1"
+        return None
+
+    async def get_usb(self) -> bool | None:
+        """Whether the device exposes its storage as a USB drive. None if unknown."""
+        responses = await self._send("GET&USB")
+        return self._parse_usb_state(responses)
+
+    async def set_usb(self, enabled: bool) -> bool | None:
+        """Enable or disable USB mass storage. Returns the state the device reports."""
+        responses = await self._send(f"USB&{1 if enabled else 0}")
+        return self._parse_usb_state(responses)
+
     # ── File Listing ─────────────────────────────
 
     async def list_dirs(self) -> list[str]:
@@ -348,6 +370,7 @@ class PocketCommander:
         """Download a recording over BLE. Returns MP3 bytes."""
         # Subscribe to audio notifications
         self._audio_data.clear()
+        self.last_expected_size = 0
         await self.client.start_notify(AUDIO_NOTIFY_CHAR, self._on_audio)
 
         # Request the file
@@ -363,6 +386,7 @@ class PocketCommander:
                 except ValueError:
                     pass
 
+        self.last_expected_size = expected_size
         if expected_size > 0:
             console.print(f"[dim]Expected size: {expected_size:,} bytes[/dim]")
 
@@ -391,7 +415,13 @@ class PocketCommander:
             if expected_size > 0 and current_size >= expected_size:
                 break
 
-        await self.client.stop_notify(AUDIO_NOTIFY_CHAR)
+        # After a disconnect bleak has dropped the services, so stop_notify
+        # would raise and lose the data — let the caller decide what to keep.
+        if not self._disconnected:
+            try:
+                await self.client.stop_notify(AUDIO_NOTIFY_CHAR)
+            except BleakError:
+                pass
         return bytes(self._audio_data)
 
     # ── WiFi Transfer ────────────────────────────
@@ -487,11 +517,13 @@ async def download_with_retry(
     recording: Recording,
     max_retries: int = 3,
     progress_callback=None,
+    retry_delay: float = 3.0,
 ) -> bytes:
     """Download a recording with automatic retry on failure.
 
     Creates its own BLE connection for each attempt. On disconnect or
-    short data, waits briefly and retries from scratch.
+    short data, waits briefly and retries from scratch. A partial transfer
+    is never returned: callers write whatever comes back to its final path.
 
     Returns MP3 bytes (trimmed to sync word) or empty bytes on total failure.
     """
@@ -501,7 +533,7 @@ async def download_with_retry(
         try:
             if attempt > 1:
                 console.print(f"[yellow]Retry {attempt}/{max_retries}...[/yellow]")
-                await asyncio.sleep(3.0)
+                await asyncio.sleep(retry_delay)
 
             async with PocketCommander(address) as cmd:
                 if not await cmd.authenticate(session_key):
@@ -512,6 +544,16 @@ async def download_with_retry(
 
                 if not data:
                     console.print("[yellow]No data received.[/yellow]")
+                    continue
+
+                # The device announces the exact size; anything less is a
+                # dropped link or a stalled transfer.
+                expected_size = cmd.last_expected_size
+                if cmd._disconnected or len(data) < expected_size:
+                    console.print(
+                        f"[yellow]Incomplete transfer: {len(data):,} of "
+                        f"{expected_size:,} bytes[/yellow]"
+                    )
                     continue
 
                 # Trim to MP3 sync word

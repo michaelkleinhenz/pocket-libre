@@ -40,6 +40,9 @@ laptop, and verified byte for byte against BLE downloads.
   - BLE transfer details measured on 1.8 (notification sizes, `MCU&OFF`, the
     required audio subscription, about 26–65 KB/s);
   - more commands (`MAC`, `GET&USB`, `WPING`) and the app's connect sequence.
+- **USB mass storage control.** `pocket-libre usb on|off|status` switches the
+  device's USB drive mode over BLE (`APP&USB&<0|1>`, read back with
+  `APP&GET&USB`), decoded from an HCI snoop capture of the vendor app.
 
 ### Changed
 
@@ -61,6 +64,21 @@ laptop, and verified byte for byte against BLE downloads.
 - The HTTP escape hatch: `wifi-transfer --url`, the `wifi.url_template`
   setting, `wifi.download_file()` and `wifi.build_url()`. No firmware serves
   files over HTTP.
+
+### Fixed
+
+- **A BLE disconnect mid-download crashed `download-all`** with `BleakError:
+  Service Discovery has not been performed yet`, raised while unsubscribing
+  from a link that was already gone. Without the crash it was worse: the
+  partial data was saved under the final name, and later runs skipped it as
+  "already exists".
+- **`download` and `download-all` now retry dropped transfers**, as `sync`
+  and `watch` already did, opening a fresh connection for each recording.
+  The README already said `download` retried; now it does.
+- **A transfer shorter than the size the device announces is treated as
+  failed** and retried, instead of being kept. Previously `sync` and
+  `watch` only rejected transfers under half the size estimated from
+  duration, and `download` checked nothing.
 
 ## [1.1.0] — 2026-09-19
 

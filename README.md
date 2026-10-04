@@ -176,6 +176,7 @@ isn't scanning flat out all day.
 | `scan` | Find nearby BLE devices |
 | `status` | Device battery, firmware, storage |
 | `list` | List recordings on device |
+| `usb` | Show or set USB mass storage mode (`on`, `off`, `status`) |
 | `download` | Download one recording |
 | `download-all` | Download every recording |
 | `sync` | Download, transcribe, and summarize what's new |
